@@ -1,20 +1,25 @@
 package repository
 
-import "ordersystem/model"
+import (
+	"ordersystem/model"
+	"time"
+)
 
 type DatabaseHandler struct {
-	// drinks represent all available drinks
 	drinks []model.Drink
-	// orders serves as order history
 	orders []model.Order
 }
 
-// todo
 func NewDatabaseHandler() *DatabaseHandler {
-	// Init the drinks slice with some test data
-	// drinks := ...
+	drinks := []model.Drink{
+		{ID: 0, Name: "Beer", Price: 1, Description: "gschmakig"},
+		{ID: 1, Name: "Spritzer", Price: 2, Description: "weniger gschmakig"},
+	}
 
-	// Init orders slice with some test data
+	orders := []model.Order{
+		{ID: 0, DrinkID: 1, Amount: 20, CreatedAt: time.Now()},
+		{ID: 1, DrinkID: 0, Amount: 4, CreatedAt: time.Now()},
+	}
 
 	return &DatabaseHandler{
 		drinks: drinks,
@@ -30,15 +35,18 @@ func (db *DatabaseHandler) GetOrders() []model.Order {
 	return db.orders
 }
 
-// todo
 func (db *DatabaseHandler) GetTotalledOrders() map[uint64]uint64 {
-	// calculate total orders
-	// key = DrinkID, value = Amount of orders
-	// totalledOrders map[uint64]uint64
+	totalledOrders := make(map[uint64]uint64)
+
+	for _, o := range db.orders {
+		totalledOrders[o.DrinkID] += o.Amount
+	}
+
 	return totalledOrders
 }
 
 func (db *DatabaseHandler) AddOrder(order *model.Order) {
-	// todo
-	// add order to db.orders slice
+	if order != nil {
+		db.orders = append(db.orders, *order)
+	}
 }
