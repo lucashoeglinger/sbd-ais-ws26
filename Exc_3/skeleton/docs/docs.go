@@ -109,7 +109,8 @@ const docTemplate = `{
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
-                                "type": "integer"
+                                "type": "integer",
+                                "format": "int64"
                             }
                         }
                     }
@@ -159,8 +160,8 @@ const docTemplate = `{
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
 	Version:          "",
-	Host:             "",
-	BasePath:         "",
+	Host:             "localhost:3000",
+	BasePath:         "/",
 	Schemes:          []string{},
 	Title:            "Order System",
 	Description:      "This system enables drink orders and should not be used for the forbidden Hungover Games.",

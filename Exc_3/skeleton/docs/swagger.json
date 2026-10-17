@@ -7,6 +7,8 @@
             "name": "Your Name"
         }
     },
+    "host": "localhost:3000",
+    "basePath": "/",
     "paths": {
         "/api/menu": {
             "get": {
@@ -100,7 +102,8 @@
                         "schema": {
                             "type": "object",
                             "additionalProperties": {
-                                "type": "integer"
+                                "type": "integer",
+                                "format": "int64"
                             }
                         }
                     }

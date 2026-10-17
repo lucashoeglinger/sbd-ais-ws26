@@ -43,29 +43,28 @@ func GetOrders(db *repository.DatabaseHandler) http.HandlerFunc {
 // @tags            Order
 // @Description     Gets the Order Total from the db
 // @Produce         json
-// @Success         200 {object} map[string]int
+// @Success         200 {object} map[uint64]uint64
 // @Router          /api/order/total [get]
 func GetOrdersTotal(db *repository.DatabaseHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		orders := db.GetOrders()
 		drinks := db.GetDrinks()
 
-		// Build a lookup map by Drink ID to avoid slice indexing out-of-bounds
 		drinkMap := make(map[uint64]model.Drink, len(drinks))
 		for _, d := range drinks {
 			drinkMap[d.ID] = d
 		}
 
-		total := 0
+		total := make(map[uint64]uint64)
+
 		for _, o := range orders {
 			if drink, exists := drinkMap[o.DrinkID]; exists {
-				// Assuming drink.Price and o.Amount match your model's types (int or float)
-				total += int(o.Amount) * int(drink.Price)
+				total[drink.ID] += uint64(o.Amount) * uint64(drink.Price)
 			}
 		}
 
 		render.Status(r, http.StatusOK)
-		render.JSON(w, r, map[string]int{"total": total})
+		render.JSON(w, r, total)
 	}
 }
 
@@ -89,7 +88,6 @@ func PostOrder(db *repository.DatabaseHandler) http.HandlerFunc {
 		}
 
 		db.AddOrder(&order)
-
 		render.Status(r, http.StatusOK)
 		render.JSON(w, r, map[string]string{"status": "ok"})
 	}

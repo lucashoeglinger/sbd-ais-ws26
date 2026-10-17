@@ -1,3 +1,4 @@
+basePath: /
 definitions:
   model.Drink:
     properties:
@@ -22,6 +23,7 @@ definitions:
       id:
         type: integer
     type: object
+host: localhost:3000
 info:
   contact:
     name: Your Name
@@ -88,6 +90,7 @@ paths:
           description: OK
           schema:
             additionalProperties:
+              format: int64
               type: integer
             type: object
       tags:

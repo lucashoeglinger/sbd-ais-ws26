@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 
 	_ "ordersystem/docs"
 	// OpenApi
@@ -22,12 +23,21 @@ import (
 //go:embed frontend/*
 var embeddedFrontend embed.FS
 
+// @host				localhost:3000
+// @BasePath			/
 // @title				Order System
 // @description			This system enables drink orders and should not be used for the forbidden Hungover Games.
 // @contact.name		Your Name
 func main() {
 	db := repository.NewDatabaseHandler()
 	r := chi.NewRouter()
+	r.Use(cors.Handler(cors.Options{
+        AllowedOrigins:   []string{"*"},
+        AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+        AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+        AllowCredentials: false,
+        MaxAge:           300,
+    }))
 	r.Use(middleware.Logger)
 
 	// Render Frontend
