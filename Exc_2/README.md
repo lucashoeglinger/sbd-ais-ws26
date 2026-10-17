@@ -194,11 +194,11 @@ Run the self-join (with `\timing on`) on each of the three tables and fill in:
 
 | rows in table | join result (`COUNT(*)`) | time |
 |---|---|---|
-| 50 000 | | |
-| 100 000 | | |
-| 200 000 | | |
+| 50 000 | 27501822 | 1149.892 ms|
+| 100 000 | 109946508 | 4401.405 ms|
+| 200 000 | 439395606 | 27963.736 ms|
 
-When the input **doubles**, by what factor do the result and the time grow?
+When the input **doubles**, by what factor do the result and the time grow? $\approx 4 (3.81)$
 Use this to **predict** the result size and the runtime on `people_big` (1M rows).
 
 **Step 2 — Does an index help?** Create an index on `country` of `people_100k`,
