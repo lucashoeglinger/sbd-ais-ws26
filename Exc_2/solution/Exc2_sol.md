@@ -1,3 +1,7 @@
+
+# Exercise 2 Solution
+
+## 2.0 Setup
 ```sql
 DROP TABLE IF EXISTS orders_big;
 
@@ -14,6 +18,7 @@ CREATE TABLE orders_big (
 \COPY orders_big(customer_name,product_category,quantity,price_per_unit, order_date, country) FROM '/data/orders_1M.csv' DELIMITER ',' CSV HEADER;
 ```
 
+## 2.1 A,
 
 ```sql
 
@@ -22,31 +27,36 @@ FROM orders_big
 WHERE price_per_unit = (SELECT MAX(price_per_unit) FROM orders_big);   
 ```
 
-
+```bash
 customer_name | product_category | quantity | price_per_unit | order_date | country 
 --------+---------------+------------------+----------+----------------+------------+---------
  Emma Brown    | Automotive       |        3 |           2000 | 2024-10-11 | Italy
 (1 row)
+```
 
+## 2.1 B
 ```sql
 
 SELECT o.product_category, SUM(o.quantity) FROM orders_big as o ORDER BY o.quantity GROUP BY o.product_category DESC LIMIT 3;
 
 ```
-
+```bash
  product_category | quantity 
 ------------------+----------
  Fashion          |        5
  Grocery          |        5
  Health & Beauty  |        5
 (3 rows)
+``` 
+
+## 2-1 C
 
 ```sql
 
 SELECT product_category, ROUND(SUM(quantity * price_per_unit)::numeric, 2) AS revenue FROM orders_big GROUP BY product_category;
 
 ```
-
+```bash
  product_category |   revenue
 ------------------+--------------
  Automotive       | 306589798.86
@@ -60,51 +70,69 @@ SELECT product_category, ROUND(SUM(quantity * price_per_unit)::numeric, 2) AS re
  Sports           |  61848990.83
  Toys             |  23271039.02
 (10 rows)
+```
+
+## 2.1 D
 
 ```sql
 
 SELECT customer_name, ROUND(SUM(quantity * price_per_unit)::numeric, 2) AS total_spend FROM orders_big 
 GROUP BY customer_name
-ORDER BY total_spend DESC LIMIT 3;
+ORDER BY total_spend DESC LIMIT 5;
 ```
-
+```bash
  customer_name  | total_spend 
 ----------------+-------------
  Carol Taylor   |   991179.18
  Nina Lopez     |   975444.95
  Daniel Jackson |   959344.48
-(3 rows)
+ Carol Lewis    |   947708.57
+ Daniel Young   |   946030.14
+(5 rows)
+```
 
+## 2.1 E
 ```sql
 
 SELECT customer_name, ROUND(SUM(quantity * price_per_unit)::numeric, 2) AS total_spend, COUNT(customer_name) AS count FROM orders_big 
 GROUP BY customer_name
-ORDER BY total_spend DESC LIMIT 3;
+ORDER BY total_spend DESC LIMIT 5;
 ```
 
-
+```bash
  customer_name  | total_spend | count 
 ----------------+-------------+-------
  Carol Taylor   |   991179.18 |  1028
  Nina Lopez     |   975444.95 |   980
  Daniel Jackson |   959344.48 |  1033
-(3 rows)
+ Carol Lewis    |   947708.57 |   943
+ Daniel Young   |   946030.14 |   973
+(5 rows)
+```
 
+If we look at the dataset generation function. Through the pigeonhole principle we can see that we have 32 first names and 33 last names. This gives us a total of $32 \times 33 = 1056$ total combinations. With a total of 1 Million rows this means that every name appears $\approx 947$ times. Group By customer name here aggregates accross all customer name combinations, meaning a Carol Taylor gets aggregated accross many countries. Through the law of large number for any random order generation the (quantity $\times$ price) works out to $\approx 945 - 1000$$ per order. This gives us an average of $950 \times 1000 = 950000$ $ spent per customer. The top 5 are so close since we draw them uniformly that the central limit theorem lets them converge to the average value.  
+
+
+## 2.2
 
 Run the self-join (with `\timing on`) on each of the three tables and fill in:
 
+```bash
 | rows in table | join result (`COUNT(*)`) | time |
 |---|---|---|
 | 50 000 | 27501822 | 1149.892 ms|
 | 100 000 | 109946508 | 4401.405 ms|
 | 200 000 | 439395606 | 27963.736 ms|
+```
 
 
 when the input doubles, the time grows by $\approx 4 (3.81)$. For the whole 1M rows it would take roughly by this estimate. $$2.25 iterations$$ this would mean the time would take approximately (699,093 ms (~11.6 min)) 
 
 
 
+```sql
 CREATE INDEX idx_country ON people_100k (country)
+```
 
 
 ```sql
