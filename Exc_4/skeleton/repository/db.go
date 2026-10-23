@@ -81,7 +81,27 @@ func prepopulate(dbConn *gorm.DB) error {
 	}
 	// create drink menu
 	// todo create drinks
+	drinks := []*model.Drink{
+		{Name: "Beer", Price: 1, Description: "gschmakig"},
+		{Name: "Spritzer", Price: 2, Description: "weniger gschmakig"},
+	}
+
+	err = dbConn.Create(drinks).Error
+	if err != nil{
+		return err
+	}
+
 	// todo create orders
+	orders := []*model.Order{
+		{DrinkID: drinks[0].ID, Amount: 20},
+		{DrinkID: drinks[1].ID, Amount: 4},
+	}
+	err = dbConn.Create(orders).Error
+	if err != nil{
+		return err
+	}
+
+
 	// GORM documentation can be found here: https://gorm.io/docs/index.html
 
 	return nil
