@@ -228,18 +228,55 @@ detector polls that table for new rows.
      -c "SELECT count(*) FROM readings WHERE run = (SELECT max(run) FROM readings);"
    ```
 
+   ```bash
+      count 
+    -------
+       260
+    (1 row)
+  ``
+
    The detector keeps up, yet `missing` grows. Are the missing readings in
-   the table? Why did the detector never see them? Read `PostgresSink` in
+   the table? Why did the detector never see them? Read `PostgresSink` missingin
    `plant.py`, then think through this timeline: gateway 1 inserts rows that
    get the ids 100–114 and commits 100 ms later; gateway 2 inserts rows
    115–129 and commits at once. A row gets its `id` when it is inserted,
    but others see it only when it is committed. Which rows does the
    detector see when it polls in between, and which `id` does it remember?
+
+
+  if we look at the timeline of the code it looks as follows
+
+| time | G_1 | G_2 | detector|
+|---|---|
+| t_0 | INSERT - uncommited | - | wait|
+| t_1 | uncommited| INSERT - commited | wait|
+| t_2 | still uncommited | commited | polls|
+| t_3 | commited | commited | wait|
+
+postgres MVCC: A row is invisible to another transaction until it is commited. at $t_2$ the detectors screenshot sees the following:
+
+* ids 100 - 114: not commited -> invisible to the detector
+* ids 115 - 129: commited -> `MAX(id)` postgres stores as its watermark.
+
+Now why does it never see 100 - 114?
+
+Ids 100–114 are below 129, so they're never returned. They land permanently in the missing set. The detector "keeps up" (no new gaps appear) yet missing grows by 15 every time this interleaving happens.
+
+Root cause: the watermark assumes ids are visible in order. Postgres guarantees ids are assigned in order, but not that they become visible in order - a later-inserted row can commit before an earlier-inserted one.
+
+
 2. Start the detector again, then the full plant
    (`python3 plant.py --sink postgres`), and let both run for ~60 s. Watch
    the detector's lines **while the plant runs**: what happens to `delay`,
    `backlog` and `missing`, and why? Stop the detector right after the
    plant: afterwards it only works through its backlog.
+
+
+   If we look at the lines of the detector we can see that backlog and delay oth are increasing steadily while the missing is only at around 18.
+
+   1, Backlog. The detector is not fast enough to read all events produced by `plant`, so it reads it at its own pace which leads to it growing until the backlog can catch up
+   2, Delay. The delay grows because $600 \times 3ms = 1.8s$ of CPU per wall clock second. This exeeds postgres' available time. So the backlog grows linearly. $D = \frac{backlog}{processing time}$ So the delay keeps growing
+   3, missing stays constant. Postgres is a very durable log and not a lossy queue. Messages that the consumer cannot read are not simply discareded, they get stored untill the detector can read it at its own pace 
 
 ### Stage B — Decide
 
@@ -247,12 +284,23 @@ You may discuss the options with a neighbour, but write your own decision
 record.
 
 Compare these two options against R1–R4 (add your own idea if you have
-one):
+one):missing
 
 1. keep PostgreSQL, but poll it better (e.g. several pollers, each for a
    part of the machines);
+
+  R1, 100k inserts/s. For this to work with standard postgres you would need partitioning, multiple databases and a write opitmized setup. Pollers dont help with writing in any way
+  R2, No losses. Pollers are inherently lossy, 1 missed cycle, 1 slow poller and the whole system grows out of order.
+  R3, p95 <= 5s. This works well at 600/s but at 1000k/s this becomes risky, since our write performance degrades our read performance degrades aswell, so while not impossible it is inherintly risky
+  R4, independent consumers -> no extra PG load.  All consumers (model, archive, dashboard) hit the same database. Adding a consumer = more queries on PG. No natural fan-out; you'd need CDC (Debezium) or app-level queues to decouple — i.e. reinventing a message bus.
+
 2. the gateways write every reading into Kafka (or another log-based
    platform) instead of into PostgreSQL.
+
+   R1, 100k inserts. Kafka is especially built for handling updates in the millions routienly. Parition it by the Machine ID.
+   R2, No losses. Per partition ordering is guranteed. All readings from 1 machine are in their own partition in order. Meaning a consumer tracks the `seq`, which detects out of order /missing readings cleanly.
+   R3, p95 <= 5s, Typical consume latency of `Producer` is typically in the 10ths of ms, meaning a p95 of 5s is almost guranteed.
+   R4, Indipendent consumers -> no extra load. Each consumer already is fully independent. Adding a group does zero impact on existing consumers or our kafka storage. That belongs to kafkas core design goal.
 
 For each option: which requirements does it meet, which are at risk? Then
 decide, and estimate for your choice: how many detector instances does
@@ -264,6 +312,43 @@ Write it down as a short decision record (half a page: options, decision,
 reasons, numbers). PostgreSQL stays the system of record for the machine
 registry in any case.
 
+
+## Options compared
+
+| | R1 Scale (600 → 100k/s) | R2 Complete & ordered | R3 p95 ≤ 5 s | R4 Independent consumers, no extra PG load |
+|---|---|---|---|---|
+| **1. PG + better polling** | At risk above ~50k/s: partitioning, multiple databases, write-optimised setup needed. Pollers do not help the write path at all. | At risk — polling is inherently lossy: 1 missed cycle or 1 slow poller and the system goes out of order. | OK at 600/s, risky above ~10k/s: write pressure degrades read latency, so 5 s p95 becomes fragile. | Fails — all consumers (model, archive, dashboard) hit the same DB. Adding a consumer = more queries on PG. No natural fan-out; would need CDC (Debezium) or app-level queues to decouple — i.e. reinventing a message bus. |
+| **2. Kafka** | ✓ Built for millions of messages/s. Partition by machine ID. | ✓ Per-partition ordering is guaranteed. All readings from one machine stay in one partition, in order. Consumer tracks `seq`, detects missing / out-of-order cleanly. | ✓ Produce→consume latency is typically in the 10ths of ms, so a p95 of 5 s is almost guaranteed. | ✓ Each consumer group is fully independent. Adding a group has zero impact on existing consumers or Kafka storage. This is Kafka's core design goal. |
+
+### R5 (additional): Replay / reprocessing
+
+If the model has a bug and the last 24 h of readings need to be reprocessed, Kafka allows resetting the consumer offset and replaying. With PG polling, you would have to re-query, re-derive state, and figure out what the model already saw — much harder and error-prone.
+
+## Reasons
+
+- Option 1 meets all four requirements today at 600/s, but R3 and R4 degrade simultaneously around 5,000–10,000 readings/s: polling intervals must shrink, write contention inflates read latency, and a third consumer starts competing for the same connections.
+- Option 2 meets all four (plus R5) at every target rate. The only cost is operational (Kafka/KRaft cluster, retention, lag monitoring).
+- The design must grow to 100k/s; Option 1 hits a wall well before that.
+
+## Detector sizing (3 ms per reading)
+
+| Rate | Compute per wall-clock second | Instances needed |
+|---|---|---|
+| 600/s | 600 × 0.003 = **1.8 s** | **2** (headroom / failover) |
+| 100,000/s | 100 000 × 0.003 = **300 s** | **300** (scale horizontally across partitions) |
+
+With Kafka partitioned by machine ID, each detector instance owns a set of partitions — no coordination needed.
+
+## Tipping point for Option 1
+
+Roughly **5,000–10,000 readings/s**. Below that, a single well-tuned PG with a 50–100 ms poll interval is fine. Above it, R3 (freshness) is the first casualty, followed by R4 (consumer isolation). A small office logging one temperature reading per minute (~0.02/s) is perfectly served by Option 1.
+
+## Non-decisions
+
+- PostgreSQL stays as **system of record** for the machine registry (static metadata, low write rate).
+- Kafka retention: 7 days (covers replay); long-term archive is a separate consumer writing to object storage.
+
+
 ### Stage C — Challenge: Build the core (Optional)
 
 The group already operates Kafka (it is in `docker-compose.yml`), so you
@@ -272,6 +357,8 @@ your decision record what would be different. Run every long-running
 process in its own terminal in `guardian/`.
 
 ![Stage C: plant.py (KafkaSink) writes to your topic; N instances of detector_service.py read it and publish to the topic anomalies; scoreboard.py checks R2 and R3. Under each part, the decision it needs: which key and settings, how many partitions, how many instances, which group and where to start reading, which key for the anomalies, and whether you can explain a FAIL](images/part2-stage-c.png)
+
+>Detailed setup structure can be found below the section `scoreboard.py`
 
 1. **Gateways.** Create the topic for the readings with `kafka-topics.sh`
    (Part 1, step 1), implement `KafkaSink` in `plant.py`, and start the plant:
@@ -286,9 +373,71 @@ process in its own terminal in `guardian/`.
    python3 scoreboard.py
    ```
 
+   ```bash
+    Run 1794317186: started 14:26:26 (3.9 min ago), 60 machines x 10 Hz, 3 faults so far
+
+    Detection  (topic anomalies: 1,226 anomaly events, models ['v1'])
+      #  machine   start  detected   delay
+      1  M-029       40s       yes   7.9 s
+      2  M-026      100s       yes   8.2 s
+      3  M-004      160s       yes   8.4 s
+
+      faults detected: 3/3, mean delay 8.2 s; false alarms (episodes on healthy machines): 0
+      latency reading -> anomaly event: p50 0.04 s, p95 0.07 s, max 0.09 s
+      duplicate anomaly events (same anomaly_id): 0
+
+    Detector instances  (model telemetry, this run)
+      det-1          pid 1994960 v1  readings    93,674  missing       0  out-of-order      0  machines   60  silent for 25 s
+      det2           pid 2004954 v1  readings   109,631  missing       0  out-of-order      0  machines   47  silent for 25 s
+      det3           pid 2017830 v1  readings    96,459  missing       0  out-of-order      0  machines   27  silent for 25 s
+
+    Requirements (measurable part)
+      [PASS] R2 complete and ordered: 0 readings missing, 0 out of order
+      [PASS] R3 fresh: p95 latency < 5 s
+      [PASS] detection: all faults found, at most 2 false alarms
+   ``` 
+
    If something fails, find out why with `kafka-topics.sh
    --describe`, `kafka-consumer-groups.sh --describe` (Part 1, step 4) and the
    Kafka UI, and fix it.
+
+
+   This was part of a short optimization method. The checks kept failing so I had to adjust a couple of things (this seems vague, below is a more detailed explanation as well as ideas as too why this may be the case).
+
+  * Iteration 0: The initial basic configuration just to establish a baseline (Was executed with 2 detectors)
+    * Architecture: `readings` `anomalies`. Both had 2 partitions in the begining
+      ```bash
+        docker exec -it kafka kafka-topics.sh --bootstrap-server localhost:9092 \
+                        --create --topic readings --partitions 2
+      ```
+      ```bash
+        docker exec -it kafka kafka-topics.sh --bootstrap-server localhost:9092 \
+                        --create --topic anomalies --partitions 2
+      ```
+    * Results: As (at least in the end) expected all checks failed (unless the scaling, which could not be checked). This is due to us storing more than 20 machines distributed accross only 2 partitions. Since I started 2 detector instances This lead to each partition to harbor 10 machines and thus each detector to handle 10 machines and with indexing latency it became slow (63s for p95 intervall). As to why the anomaly check failed, this was most likely due to me stopping the detectors too early which they simply had not enough time to catch the last thrown anomaly. (2 out of 3 were found) 
+  
+  * Iteration 1: A small refinement
+    * Architecture: Topics stay the same but they have 20 partitions instead of 2 (Still only 2 detector instances)
+
+      ```bash
+        docker exec -it kafka kafka-topics.sh --bootstrap-server localhost:9092 \
+                        --create --topic readings --partitions 20
+      ```
+      ```bash
+        docker exec -it kafka kafka-topics.sh --bootstrap-server localhost:9092 \
+                        --create --topic anomalies --partitions 20
+    * Results: Now it catches all anomalys but one check still failed (the p95 latency). This is due to the bug above I tried debugging for some time. But i found the issue. What happened was that now the machines are equally spread over 20 partitions (approximately 1-2 machines per parition). This has the same error as the 2 partitions had (but in a slightly different form). I used describe to find the actual error what was happening.
+
+    ```bash
+        docker exec -it kafka kafka-consumer-groups.sh --bootstrap-server localhost:9092 --group machines        --describe   
+    ```
+    
+    I unfortunately did not safe the output of this command, but the `LAG` column was $\approx 800 - 1200$ Which is very high per machine. So the issue still lied in the overloading of the detector instances (source: trust me bro)
+
+* Iteration 2:
+  * Architecture: Same as in `1` but I increased the number of detectors to 3 since at least according to theory $\approx 7-8$ machines per detector shoul dbe fine for latency purposes. 
+
+  * Results: Now All checks passed and the latency was at the expected `0.07` seconds. (The output above is from this iteration)
 
 <details>
 <summary><b>Hints</b> (open only when you are stuck)</summary>
