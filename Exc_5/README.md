@@ -247,10 +247,10 @@ detector polls that table for new rows.
   if we look at the timeline of the code it looks as follows
 
 | time | G_1 | G_2 | detector|
-|---|---|
+|---|---|---|---|
 | t_0 | INSERT - uncommited | - | wait|
 | t_1 | uncommited| INSERT - commited | wait|
-| t_2 | still uncommited | commited | polls|
+| t_2 | still uncommited | commited | polls (10ms)|
 | t_3 | commited | commited | wait|
 
 postgres MVCC: A row is invisible to another transaction until it is commited. at $t_2$ the detectors screenshot sees the following:
