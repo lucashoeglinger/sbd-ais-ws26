@@ -253,7 +253,7 @@ detector polls that table for new rows.
 | t_2 | still uncommited | commited | polls (10ms)|
 | t_3 | commited | commited | wait|
 
-postgres MVCC: A row is invisible to another transaction until it is commited. at $t_2$ the detectors screenshot sees the following:
+postgres MVCC: A row is invisible to another transaction until it is commited. at $t_2$ the detectors sees the following:
 
 * ids 100 - 114: not commited -> invisible to the detector
 * ids 115 - 129: commited -> `MAX(id)` postgres stores as its watermark.
@@ -274,9 +274,9 @@ Root cause: the watermark assumes ids are visible in order. Postgres guarantees 
 
    If we look at the lines of the detector we can see that backlog and delay oth are increasing steadily while the missing is only at around 18.
 
-   1, Backlog. The detector is not fast enough to read all events produced by `plant`, so it reads it at its own pace which leads to it growing until the backlog can catch up
-   2, Delay. The delay grows because $600 \times 3ms = 1.8s$ of CPU per wall clock second. This exeeds postgres' available time. So the backlog grows linearly. $D = \frac{backlog}{processing time}$ So the delay keeps growing
-   3, missing stays constant. Postgres is a very durable log and not a lossy queue. Messages that the consumer cannot read are not simply discareded, they get stored untill the detector can read it at its own pace 
+   1,Backlog. The plant produces 600 readings/s but a single detector can only score 1/3 ms = 333/s. Since 600 > 333, the backlog grows by ~267 readings every wall-clock second and never drains while the plant is running. It only shrinks after the plant stops and the detector works through the remaining queue. $\newline$
+   2, Delay. The model takes 3 ms per reading, so one detector processes at most 333/s while 600/s arrive. The backlog grows linearly (~267/s), and delay = backlog / 333, so it climbs without bound while the plant runs. The bottleneck is the single-threaded model inference, not Postgres — the rows are all there, the detector just can't score them fast enough. $\newline$
+   3, Missing grows (slowly) for the same MVCC reason as Q1: every time a gateway's batch commits after a later batch, those rows fall below the watermark and are skipped forever. At 60 s with 4 gateways this hasn't happened many times yet, so the count is still low - but it's not flat.
 
 ### Stage B — Decide
 
@@ -289,17 +289,17 @@ one):missing
 1. keep PostgreSQL, but poll it better (e.g. several pollers, each for a
    part of the machines);
 
-  R1, 100k inserts/s. For this to work with standard postgres you would need partitioning, multiple databases and a write opitmized setup. Pollers dont help with writing in any way
-  R2, No losses. Pollers are inherently lossy, 1 missed cycle, 1 slow poller and the whole system grows out of order.
-  R3, p95 <= 5s. This works well at 600/s but at 1000k/s this becomes risky, since our write performance degrades our read performance degrades aswell, so while not impossible it is inherintly risky
+  R1, 100k inserts/s. For this to work with standard postgres you would need partitioning, multiple databases and a write opitmized setup. Pollers dont help with writing in any way $\newline$
+  R2, No losses. Pollers are inherently lossy, 1 missed cycle, 1 slow poller and the whole system grows out of order. $\newline$
+  R3, p95 <= 5s. This works well at 600/s but at 1000k/s this becomes risky, since our write performance degrades our read performance degrades aswell, so while not impossible it is inherintly risky $\newline$
   R4, independent consumers -> no extra PG load.  All consumers (model, archive, dashboard) hit the same database. Adding a consumer = more queries on PG. No natural fan-out; you'd need CDC (Debezium) or app-level queues to decouple — i.e. reinventing a message bus.
 
 2. the gateways write every reading into Kafka (or another log-based
    platform) instead of into PostgreSQL.
 
-   R1, 100k inserts. Kafka is especially built for handling updates in the millions routienly. Parition it by the Machine ID.
-   R2, No losses. Per partition ordering is guranteed. All readings from 1 machine are in their own partition in order. Meaning a consumer tracks the `seq`, which detects out of order /missing readings cleanly.
-   R3, p95 <= 5s, Typical consume latency of `Producer` is typically in the 10ths of ms, meaning a p95 of 5s is almost guranteed.
+   R1, 100k inserts. Kafka is especially built for handling updates in the millions routienly. Parition it by the Machine ID. $\newline$
+   R2, No losses. Per partition ordering is guranteed. All readings from 1 machine are in their own partition in order. Meaning a consumer tracks the `seq`, which detects out of order /missing readings cleanly. $\newline$
+   R3, p95 <= 5s, Typical consume latency of `Producer` is typically in the 10ths of ms, meaning a p95 of 5s is almost guranteed. $\newline$
    R4, Indipendent consumers -> no extra load. Each consumer already is fully independent. Adding a group does zero impact on existing consumers or our kafka storage. That belongs to kafkas core design goal.
 
 For each option: which requirements does it meet, which are at risk? Then
@@ -414,7 +414,7 @@ process in its own terminal in `guardian/`.
         docker exec -it kafka kafka-topics.sh --bootstrap-server localhost:9092 \
                         --create --topic anomalies --partitions 2
       ```
-    * Results: As (at least in the end) expected all checks failed (unless the scaling, which could not be checked). This is due to us storing more than 20 machines distributed accross only 2 partitions. Since I started 2 detector instances This lead to each partition to harbor 10 machines and thus each detector to handle 10 machines and with indexing latency it became slow (63s for p95 intervall). As to why the anomaly check failed, this was most likely due to me stopping the detectors too early which they simply had not enough time to catch the last thrown anomaly. (2 out of 3 were found) 
+    * Results: As (at least in the end) expected all checks failed (unless the scaling, which could not be checked). Each consumer gets one partition, so each detector scores 10 machines × 10 Hz = 100/s. That is under the 333/s processing rate, yet the p95 still reached 63 s — likely due to the initial burst when all machines start simultaneously and the model's per-machine state is cold. The LAG confirmed the detectors were saturated.
   
   * Iteration 1: A small refinement
     * Architecture: Topics stay the same but they have 20 partitions instead of 2 (Still only 2 detector instances)
@@ -432,7 +432,7 @@ process in its own terminal in `guardian/`.
         docker exec -it kafka kafka-consumer-groups.sh --bootstrap-server localhost:9092 --group machines        --describe   
     ```
     
-    I unfortunately did not safe the output of this command, but the `LAG` column was $\approx 800 - 1200$ Which is very high per machine. So the issue still lied in the overloading of the detector instances (source: trust me bro)
+    I unfortunately did not safe the output of this command, but the `LAG` column was $\approx 800 - 1200$ Which is very high per machine. So the issue still lied in the overloading of the detector instances (confirmed via kafka logs)
 
 * Iteration 2:
   * Architecture: Same as in `1` but I increased the number of detectors to 3 since at least according to theory $\approx 7-8$ machines per detector shoul dbe fine for latency purposes. 
