@@ -1,0 +1,8 @@
+[project]
+name = "exc-6"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "confluent-kafka>=2.16.1",
+    "psycopg[binary]==3.3.6",
+]
