@@ -8,7 +8,7 @@ For this scenario, log-based CDC is the optimal choice because it safely guarant
 
 > Predictions: We did not set a partition count, so Debezium decides. If the topic gets a single partition, only one of the three velocity instances can read it, because within a consumer group each partition is read by exactly one instance. The other two would sit idle. One instance handles at most ~500 payments/s of the 1,000, so its lag would grow and R4 should fail. The anomaly model needs only one instance, so it should pass.
 
-> Results: The velocity model only catches 2/6 fraudulent caught. It never gave false alert and the R4 fails, p95 68.7 s. This is due to the topic having 1 partition (partitions 1, members 3), so only vel-1 reads and its lag grows to about 70,000 events, while vel-2 and vel-3 never get a partition. the others just sit there. In the kafka UI it became apparent that the key column is the `id` of an event. (found out by comparing the payload with the key column (which was an Integer))
+> Results: The velocity model catches only 2/6 frauds (R3 fails) and R4 fails with a p95 of 68.7 s. There are no false alerts. The topic has 1 partition (`partitions 1, members 3`), so only `vel-1` gets payments and its lag grows to about 70,000 events, while `vel-2` and `vel-3` never get a partition. In the Kafka UI the key is the integer payment `id`, not `user_id`, which I found by comparing the key with the payload.)
 
 
 ``` bash
@@ -38,10 +38,14 @@ Alerts on 'fraud-alerts' (committed, this run)
 ```
 
 ### 2.2 Run 2
+Note: my first attempt caught 3/8 frauds, more than I expected, so I ran Run 2
+a second time. It caught 0/6.
+
 > Predictions: Debezium's default key is the table's primary key `id`. Since `id` is unique, the key hash spreads payments evenly over the six partitions, like having no key. All three instances will get two partitions each and keep up, so R4 should pass. But the 12 test payments of one stolen card land on different partitions, so on different instances. Each instance sees only about 4 of them, below the threshold of 8, so R3 for the velocity model should fail. The key would have to be the cardholder (`user_id`), the entity whose state the model keeps.
 
-> Results: As expected in predictions the velocity (card testing fraud) was not caught with great success. Since the parition key is `id`, each instance gets only `12/3 = 4` out of the cards 12 transactions, which is way below the models threshold of `8` (This is the average because the hash is random as this point, there is still a chance of putting more than `8` on a partition), The R3 is higher than expected, this could be due to chance but it seems unlikely. We do now have 6 partitions instead of 1. Now the parittions get distributed accross all 3 velocity instances. Leading to the p95 latency checks to pass.
+> Results: R3 fails in both attempts (3/8 and 0/6). R4 passes (p95 1.0 s in the first attempt; in the second there were no alerts and the worst lag was 1.0 s). Each instance reads two of the six partitions and keeps up. The key is the payment `id`, so the 12 test payments of one card are spread over the instances, about 4 each on average, below the threshold of 8. The 3/8 of the first attempt is an outlier that I cannot fully explain.
 
+#### Run2 attempt 1
 ```bash
 
 Consumer groups on the CDC topic(s)   [R2]
@@ -72,12 +76,40 @@ Alerts on 'fraud-alerts' (committed, this run)
 
 ```
 
+#### Run 2 attempt 2
+```bash
+Consumer groups on the CDC topic(s)   [R2]
+  group                    topic                              partitions  members       lag
+  anomaly-agent            fraud.public.transactions                   6        1         0
+  velocity-agent           fraud.public.transactions                   6        3         0
+
+Agent instances (telemetry of this run)   [R3, R4]
+  instance         pid model      transactions  cardholders  out-of-order  lag (s)      seen
+  ano-1         627739 anomaly         122,575       70,514             0      0.6      18s ago
+  vel-1         627740 velocity         34,224       29,027             0      0.7      15s ago
+  vel-2         627741 velocity         35,554       29,953             0      0.6      15s ago
+  vel-3         627742 velocity         35,882       30,134             0      0.6      15s ago
+
+Alerts on 'fraud-alerts' (committed, this run)
+
+  velocity model (card testing)
+    R3  frauds caught          0/6  (0%)   FAIL  (>= 90 %)
+    R3  false alerts           0   PASS  (at most 10 % of the flagged transactions)
+    R4  no alerts; worst lag of the velocity agents 1.0 s   PASS  (<= 5 s)
+        duplicate alerts       0   (info: alerts case management got twice)
+
+  anomaly model (account takeover)
+    R3  frauds caught          6/6  (100%)   PASS  (>= 90 %)
+    R3  false alerts           0   PASS  (at most 10 % of the flagged transactions)
+    R4  alert latency p50/p95  0.8 s / 0.9 s   PASS  (p95 <= 5 s after the commit)
+        duplicate alerts       0   (info: alerts case management got twice)
+```
 
 ### 2.3 Run 3
 
 > Prediction: With `message.key.columns` set to `user_id`, the key of an event becomes `{"user_id": ...}` instead of `{"id": ...}`. All payments of one cardholder hash to the same partition, so one instance sees all 12 test payments and alerts at the 8th. R3 for the velocity model should pass, and R4 should stay as in Run 2.
 
-> Results: As expected the Key column worked to catch card fraud. This was due to us previously storing with the `id` primary key so the users got stored in some "random" partition and the detector not finding the abnormality. This is due to our card detector now seing all 12 events in the same partition instead of them being scattered accross all 3 detectors.
+> Results: R3 passes (6/6 frauds) and R4 passes (p95 1.1 s). With `user_id` as the key, all payments of one cardholder hash to the same partition and so to one instance, which sees all 12 test payments and alerts at the 8th. In Run 2 they were spread over three instances.
 
 ```bash
 
