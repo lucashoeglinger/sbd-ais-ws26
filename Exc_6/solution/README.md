@@ -8,7 +8,7 @@ For this scenario, log-based CDC is the optimal choice because it safely guarant
 
 > Predictions: We did not set a partition count, so Debezium decides. If the topic gets a single partition, only one of the three velocity instances can read it, because within a consumer group each partition is read by exactly one instance. The other two would sit idle. One instance handles at most ~500 payments/s of the 1,000, so its lag would grow and R4 should fail. The anomaly model needs only one instance, so it should pass.
 
-> Results: The velocity model catches only 2/6 frauds (R3 fails) and R4 fails with a p95 of 68.7 s. There are no false alerts. The topic has 1 partition (`partitions 1, members 3`), so only `vel-1` gets payments and its lag grows to about 70,000 events, while `vel-2` and `vel-3` never get a partition. In the Kafka UI the key is the integer payment `id`, not `user_id`, which I found by comparing the key with the payload.)
+> Results: The velocity model catches only 2/6 frauds (R3 fails) and R4 fails with a p95 of 68.7 s. There are no false alerts. The topic has 1 partition (`partitions 1, members 3`), so only `vel-1` gets payments and its lag grows to about 70,000 events, while `vel-2` and `vel-3` never get a partition. In the Kafka UI the key is the integer payment `id`, not `user_id`, which I found by comparing the key with the payload.
 
 
 ``` bash
@@ -41,7 +41,7 @@ Alerts on 'fraud-alerts' (committed, this run)
 Note: my first attempt caught 3/8 frauds, more than I expected, so I ran Run 2
 a second time. It caught 0/6.
 
-> Predictions: Debezium's default key is the table's primary key `id`. Since `id` is unique, the key hash spreads payments evenly over the six partitions, like having no key. All three instances will get two partitions each and keep up, so R4 should pass. But the 12 test payments of one stolen card land on different partitions, so on different instances. Each instance sees only about 4 of them, below the threshold of 8, so R3 for the velocity model should fail. The key would have to be the cardholder (`user_id`), the entity whose state the model keeps.
+> Predictions: Debezium's default key is the table's primary key `id`. Since `id` is unique, the key hash spreads payments evenly over the six partitions, like having no key. All three instances will get two partitions each and keep up, so R4 should pass. But the 12 test payments of one stolen card land on different partitions, so on different instances. Each instance sees only about 4 of them, below the threshold of 8, so R3 for the velocity model should fail.
 
 > Results: R3 fails in both attempts (3/8 and 0/6). R4 passes (p95 1.0 s in the first attempt; in the second there were no alerts and the worst lag was 1.0 s). Each instance reads two of the six partitions and keeps up. The key is the payment `id`, so the 12 test payments of one card are spread over the instances, about 4 each on average, below the threshold of 8. The 3/8 of the first attempt is an outlier that I cannot fully explain.
 
@@ -154,14 +154,12 @@ without bound (about 70,000 events and a p95 of 68.7 s in my Run 1), so alerts
 would come too late to block the thief's next payment (R4), and frauds of the
 last minutes would not be caught yet. With the key `id` and 6 partitions, the 12
 test payments of one stolen card spread over all three instances, each sees about
-4, below the threshold of 8, and R3 fails (38 % in Run 2). The fraud model would
+4, below the threshold of 8, and R3 fails (38 % / 0% in Run 2). The fraud model would
 just catch fewer frauds, with no crash and healthy-looking lag.
 
 The partition problem is easy to notice: growing consumer lag, 3 group members
 but 1 partition, and agents that print `assigned partitions []`. The key problem
-is silent. A team would only find it by measuring the catch rate, for example by
-injecting a synthetic card-testing attack and checking that it alerts, or by
-comparing alerts with confirmed chargebacks. A check before go-live helps too:
+is silent. A team would only find it by measuring the catch rate, e.g. by checking that a synthetic card testing fraud actually alerts, or by measuring alerts vs. confirmed frauds. A check before go-live helps too:
 the key must be the entity whose state the model keeps (`user_id`), which one
 look at the key in the Kafka UI shows.
 
